@@ -1,0 +1,32 @@
+"Check","Passed"
+"Conditional Gaussian mean",TRUE
+"Conditional Schur variance",TRUE
+"Observed Mahalanobis distance",TRUE
+"All-missing row location",TRUE
+"Student latent scale prior for empty row",TRUE
+"Gaussian penalized M-step",TRUE
+"Student complete-data latent weights",TRUE
+"Student penalized covariance",TRUE
+"Contaminated ECM location",TRUE
+"Contaminated ECM covariance",TRUE
+"Contaminated ECM inflation",TRUE
+"Student missing-data weighted second moment",TRUE
+"Contaminated missing-data component moment",TRUE
+"Mask reproducibility",TRUE
+"Fixed-size MCAR count",TRUE
+"Preexisting missing excluded",TRUE
+"Gaussian converged on synthetic missing data",TRUE
+"Gaussian monotone penalized objective",TRUE
+"Gaussian positive definite",TRUE
+"Gaussian observed values preserved",TRUE
+"Contaminated converged on synthetic missing data",TRUE
+"Contaminated monotone penalized objective",TRUE
+"Contaminated positive definite",TRUE
+"Contaminated observed values preserved",TRUE
+"Student_t converged on synthetic missing data",TRUE
+"Student_t monotone penalized objective",TRUE
+"Student_t positive definite",TRUE
+"Student_t observed values preserved",TRUE
+"Daytime boundary",TRUE
+"Evening boundary",TRUE
+"Nighttime boundary",TRUE

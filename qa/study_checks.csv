@@ -1,0 +1,16 @@
+"Check","Passed"
+"All requested checkpoints exist",TRUE
+"Every MCAR mask reproduces from its seed",TRUE
+"Every hidden target matches original source data",TRUE
+"Window comparisons use identical coordinates",TRUE
+"Time-of-day means exclude hidden entries in every fit",TRUE
+"Zero-only predictions are zero in all replicates",TRUE
+"Bootstrap linked cluster samples reproduce from seeds",TRUE
+"Bootstrap duplicates share missingness; no cross-copy target leakage",TRUE
+"All planned EM fits attempted",TRUE
+"All returned covariances positive definite",TRUE
+"Primary objectives monotone",TRUE
+"200 distinct Monte Carlo masks per date",TRUE
+"500 bootstrap samples per date",TRUE
+"Finite metrics always use full evaluation coverage",TRUE
+"Realized full-day mask size is ceiling 10 percent",TRUE
