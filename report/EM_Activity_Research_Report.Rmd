@@ -1,0 +1,374 @@
+---
+title: "Recovering masked hourly activity"
+subtitle: "Three penalized EM distributions, two benchmarks, and paired fitting-window comparisons"
+date: "November 16, 2026"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 2
+    self_contained: true
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    mathjax: null
+    css: custom.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE,fig.width=11,fig.height=6)
+root<-Sys.getenv('EM_ACTIVITY_ROOT')
+if(!nzchar(root)) root<-normalizePath(if(dir.exists('results'))'.' else '..')
+source(file.path(root,'R','setup.R'));load_project(root)
+library(ggplot2);library(plotly);library(DT);library(crosstalk)
+cfg<-yaml::read_yaml(file.path(root,'config.yml'))
+rd<-function(p)read.csv(file.path(root,'results',p))
+audit<-rd('descriptive/data_audit.csv');desc<-rd('descriptive/window_activity_summary.csv')
+mc<-rd('monte_carlo/replicate_metrics.csv')
+ms<-rd('monte_carlo/monte_carlo_summary.csv');bc<-rd('bootstrap/bootstrap_confidence_intervals.csv')
+paired<-rd('model_comparisons/paired_model_comparisons.csv')
+windows<-rd('model_comparisons/window_comparisons.csv')
+ranked<-rd('model_comparisons/final_model_ranking.csv')
+conv<-rd('model_comparisons/convergence_summary.csv');dg<-rd('model_comparisons/fit_diagnostics.csv')
+linkage<-read.csv(file.path(root,'data/processed/participant_linkage.csv'))
+nm<-length(unique(mc$Replicate));nb<-max(bc$Attempted)
+pal<-c(Gaussian='#0072B2',Contaminated='#009E73',Student_t='#D55E00',Zero_only='#7A5195',Time_of_day_mean='#666666')
+tbl<-function(d,n=8)datatable(d,rownames=FALSE,filter='top',
+ options=list(pageLength=n,scrollX=TRUE,autoWidth=TRUE))
+fig<-function(name,caption){knitr::include_graphics(file.path(root,'results','figures',paste0(name,'.png')))}
+```
+
+```{r dashboard, results='asis'}
+cat(sprintf('<div class="dashboard"><div class="card"><strong>%d</strong><span>unique participants across dates</span></div><div class="card"><strong>%s</strong><span>originally observed hourly counts</span></div><div class="card"><strong>%d / %d</strong><span>Monte Carlo repetitions per date</span></div><div class="card"><strong>%d / %d</strong><span>linked participant bootstrap samples</span></div></div>',
+ nrow(linkage),format(sum(audit$Observed),big.mark=','),nm,cfg$monte_carlo_repetitions,nb,cfg$bootstrap_repetitions))
+```
+
+# Abstract
+
+We compare Gaussian, contaminated Gaussian, and Student's t conditional imputations with zero-only and time-of-day mean benchmarks using hourly step counts on **April 1, 2016 (Friday)** and **May 8, 2016 (Sunday)**. Each repetition masks 10% of originally observed entries, rounded up to a whole count. The same mask is used by all methods and all fitting windows. Daytime is **09:00–18:00**, and evening is **18:00–24:00**. Whole-day predictions are also evaluated on the identical daytime and evening heldout entries.
+
+```{r abstract-findings, results='asis'}
+for(day in unique(ranked$Day)) {
+ a<-ranked[ranked$Day==day & ranked$FitWindow=='Whole_day',]; best<-a[which.min(a$RMSE),]
+ em<-a[a$Method %in% c('Gaussian','Contaminated','Student_t'),]; bestem<-em[which.min(em$RMSE),]
+ cat(sprintf('On %s, the lowest whole-day mean RMSE among all five methods was **%s (%.1f steps)**; the best EM distribution was **%s (%.1f steps)**. ',day,best$Method,best$RMSE,bestem$Method,bestem$RMSE))
+}
+cat(sprintf('\n\nThere were **%d failed or nonconverged fits out of %d attempted EM fits**. Participant-bootstrap intervals below quantify sensitivity to the sampled participants conditional on the primary mask; they do not establish generalization to unseen dates or participants.\n',sum(!dg$Converged),nrow(dg)))
+```
+
+# Introduction and research questions
+
+Wearable activity records contain many legitimate zeros, strong skewness, and occasional large counts. A robust continuous distribution may limit the influence of unusual participants, but it does not explicitly model the point mass at zero. A zero-only benchmark shows how much accuracy can be obtained simply by exploiting inactivity; the time-of-day mean tests whether multivariate dependence adds value beyond the average hourly profile.
+
+We ask which distribution has the smallest prediction error, whether the two dates behave differently, whether fitting fewer hours helps on the **same** heldout entries, and whether any advantage survives masking variation and participant resampling. With only one Friday and one Sunday, differences between these dates cannot be attributed to weekend status or holidays in general.
+
+# Data validation and activity distribution
+
+The hourly data derive from the [public crowd-sourced Fitbit exports](https://zenodo.org/records/53894). The supplied April workbook contains a header; the May workbook starts immediately with participant data. The loader explicitly handles this difference, preserving the first May participant. Participant IDs are labels, not numerical predictors. No other calendar dates are added. Hour columns are allocated by interval start: Hour09 represents [09:00,10:00). The spreadsheets do not establish an IANA timezone; source clock times are retained without timezone conversion.
+
+```{r audit}
+knitr::kable(audit,digits=0,caption='Input audit. Matrix rank is centered complete-data rank, before masking.')
+```
+
+Publication labels replace source participant IDs, and raw spreadsheets and individual mask/prediction tables are excluded from this repository. There are **`r sum(linkage$Weekday & linkage$Weekend)` linked participants** observed on both dates. The bootstrap draws participant IDs from their union and preserves date membership, allowing the number of rows on each date to vary. Existing missing values are retained, and legitimate zeros remain observed values.
+
+```{r profile-interactive}
+profiles<-rd('descriptive/hourly_profiles.csv')
+gp<-ggplot(profiles,aes(Hour,Value,color=Day,text=paste(Day,'hour',Hour,'mean',round(Value,1))))+
+ geom_line()+geom_point()+geom_vline(xintercept=c(6,9,18),linetype='dashed',color='grey65')+
+ scale_x_continuous(breaks=seq(0,24,3),limits=c(0,24))+theme_minimal()+
+ labs(x='Hour at interval start',y='Mean steps',title='Selected-day mean activity profiles')
+ggplotly(gp,tooltip='text')
+```
+
+The dashed boundaries show the end of nighttime at 06:00, the start of daytime at 09:00, and the start of evening at 18:00. Hours 06:00–09:00 belong to the whole-day analysis only. Whole day intentionally contains all narrower windows; the narrower windows do not overlap.
+
+```{r descriptive-table}
+tbl(desc)
+```
+
+```{r distribution, fig.cap='Figure 2. Distributions on log(1 + steps) and observed zero proportions. Zeros are retained in the distribution.'}
+fig('02_distribution_zeros')
+```
+
+# Statistical methodology
+
+## Masking and fair evaluation
+
+For each date, a fixed-size MCAR sample is drawn uniformly without replacement from the originally observed cells. The number hidden is ceiling(0.10 × observed cells). Seeds are in `config.yml` and the mask-coordinate CSV. A single full-day mask is subset for all windows. Hidden truth is stored for scoring and is never supplied to the fitting function. No scaling parameter, hourly mean, or initialization uses the hidden values.
+
+Every finite method score covers **all** heldout entries in that evaluation window. Fits that fail or reach the iteration limit have unavailable predictions and scores, not zero error. An interval without sufficient observed training values yields an explicit fit failure; a missing hourly mean remains unavailable. Each paired comparison uses the same replicate and entries. Rankings use only the repetitions for which all five methods have complete scores, and show their count.
+
+```{r masking-table}
+rates<-rd('missingness/realized_missingness.csv')
+tbl(rates[rates$Experiment=='monte_carlo' & rates$Replicate==1,],8)
+```
+
+<details><summary>Gaussian penalized EM: conditional moments and updates</summary>
+
+For participant i, let O and M index observed and missing hours, respectively. Under X<sub>i</sub> ∼ N<sub>p</sub>(μ, S), partition the covariance by O and M. The E-step uses:
+
+<div class="equation">m<sub>i,M</sub> = μ<sub>M</sub> + S<sub>MO</sub>S<sub>OO</sub><sup>−1</sup>(x<sub>i,O</sub> − μ<sub>O</sub>)<br>
+C<sub>i,MM</sub> = S<sub>MM</sub> − S<sub>MO</sub>S<sub>OO</sub><sup>−1</sup>S<sub>OM</sub><br>
+E[X<sub>i</sub>X<sub>i</sub><sup>T</sup> | x<sub>i,O</sub>] = m<sub>i</sub>m<sub>i</sub><sup>T</sup> + C<sub>i</sub>.</div>
+
+C is zero outside the missing-by-missing block. With κ = `r cfg$covariance_penalty`, the standardized covariance penalty is −κ/2 {log|S| + tr(S<sup>−1</sup>)}. The M-step is:
+
+<div class="equation">μ<sup>new</sup> = Σ<sub>i</sub> m<sub>i</sub> / n<br>
+S<sup>new</sup> = {Σ<sub>i</sub>[(m<sub>i</sub>−μ<sup>new</sup>)(m<sub>i</sub>−μ<sup>new</sup>)<sup>T</sup> + C<sub>i</sub>] + κI} / (n + κ).</div>
+
+This maximizes the penalized expected complete-data objective for that step. It is penalized EM, rather than unpenalized maximum-likelihood EM. Observed-data likelihood and penalized objective are both recorded; monotonicity is required for the penalized objective.
+
+</details>
+
+<details><summary>Contaminated Gaussian penalized ECM: latent memberships and missing values</summary>
+
+The density is α φ<sub>p</sub>(x; μ,S) + (1−α) φ<sub>p</sub>(x; μ,ηS). The first component represents the central distribution; η &gt; 1 inflates the covariance for the contaminated component. Let q<sub>i</sub> = |O<sub>i</sub>| and δ<sub>i</sub> = (x<sub>i,O</sub>−μ<sub>O</sub>)<sup>T</sup>S<sub>OO</sub><sup>−1</sup>(x<sub>i,O</sub>−μ<sub>O</sub>). Posterior good-component membership is:
+
+<div class="equation">τ<sub>i</sub> = logistic[log{α/(1−α)} + ½{q<sub>i</sub> log η − δ<sub>i</sub>(1−1/η)}]<br>
+w<sub>i</sub> = τ<sub>i</sub> + (1−τ<sub>i</sub>)/η.</div>
+
+The component conditional locations both equal m<sub>i</sub>. Their conditional covariance matrices are C<sub>i</sub> and η<sup>old</sup>C<sub>i</sub>. Consequently the covariance update contains **unweighted C<sub>i</sub>**, not w<sub>i</sub>C<sub>i</sub>:
+
+<div class="equation">μ<sup>new</sup> = Σ w<sub>i</sub>m<sub>i</sub> / Σ w<sub>i</sub><br>
+S<sup>new</sup> = {Σ[w<sub>i</sub>d<sub>i</sub>d<sub>i</sub><sup>T</sup> + C<sub>i</sub>] + κI}/(n+κ), where d<sub>i</sub> = m<sub>i</sub>−μ<sup>new</sup><br>
+α<sup>new</sup> = mean(τ<sub>i</sub>)<br>
+η<sup>new</sup> = Σ(1−τ<sub>i</sub>){d<sub>i</sub><sup>T</sup>(S<sup>new</sup>)<sup>−1</sup>d<sub>i</sub> + η<sup>old</sup>tr[(S<sup>new</sup>)<sup>−1</sup>C<sub>i</sub>]} / {p Σ(1−τ<sub>i</sub>)}.</div>
+
+The CM steps update μ, then S, α, and η while the E-step moments remain fixed. Constraints are α ∈ [0.5,0.995], η ∈ [1.01,1000], ensuring a majority central component and bounded inflation. Updates are clipped to the constrained maximizers. Initialization is α = 0.9 and η = 10. This is penalized ECM; different initializations could reach other local maxima. Boundary estimates are available in fit diagnostics. The model is continuous, not a zero-inflated model.
+
+</details>
+
+<details><summary>Student's t penalized EM: latent scales and missing values</summary>
+
+Use U<sub>i</sub> ∼ Gamma(ν/2,ν/2), with X<sub>i</sub> | U<sub>i</sub> ∼ N(μ,S/U<sub>i</sub>). Gamma is parameterized by shape and rate. Degrees of freedom are fixed at **ν = `r cfg$student_df`**, a prespecified heavy-tailed distribution with finite variance. No degrees-of-freedom tuning uses heldout outcomes. Its scale S is not its marginal covariance: Cov(X) = νS/(ν−2).
+
+<div class="equation">U<sub>i</sub> | x<sub>i,O</sub> ∼ Gamma[(ν+q<sub>i</sub>)/2, (ν+δ<sub>i</sub>)/2]<br>
+w<sub>i</sub> = E[U<sub>i</sub> | x<sub>i,O</sub>] = (ν+q<sub>i</sub>)/(ν+δ<sub>i</sub>)<br>
+E[U<sub>i</sub>X<sub>i</sub> | x<sub>i,O</sub>] = w<sub>i</sub>m<sub>i</sub><br>
+E[U<sub>i</sub>X<sub>i</sub>X<sub>i</sub><sup>T</sup> | x<sub>i,O</sub>] = w<sub>i</sub>m<sub>i</sub>m<sub>i</sub><sup>T</sup> + C<sub>i</sub>.</div>
+
+The mean and covariance updates have the same weighted form shown for the contaminated model, with these t weights. Again the C term is unweighted: conditional on U, the missing covariance is C/U, and multiplication by U cancels the scale. The conditional missing mean is m. No Gamma log-scale expectation is needed when ν is fixed.
+
+</details>
+
+## Common numerical choices and prediction metrics
+
+All three distributions use the same full covariance structure, deterministic starting location 0 and covariance I in standardized coordinates, the same penalty κ = `r cfg$covariance_penalty`, iteration limit `r cfg$max_iterations`, and tolerance `r cfg$tolerance`. Centers and standard deviations are learned solely from the masked training matrix. Constant observed columns use scale 1. Regularization stabilizes high-dimensional and rank-deficient bootstrap samples without changing the original observed zeros. The relative objective change must be below the tolerance, and maximum standardized parameter change below its square root. Cholesky factorizations enforce positive definiteness.
+
+The zero-only method predicts 0 at every hidden cell. The time-of-day mean uses remaining observed participants at the same hour on the same date. Predictions are neither rounded nor clipped; negative predictions expose the continuous-distribution approximation.
+
+RMSE is the square root of mean squared prediction error; MAE is mean absolute error; bias is prediction minus truth; median absolute error and negative-prediction proportion are also saved. All error measures use heldout entries only. Activity categories are prespecified as zero, low positive (1–`r cfg$low_positive_max`), moderate (`r cfg$low_positive_max+1`–`r cfg$high_positive_min`), and high (&gt;`r cfg$high_positive_min` steps). Categories are used for scoring, not fitting.
+
+<details><summary>Monte Carlo design and interpretation</summary>
+
+Each date has `r nm` completed masking repetitions. Each method and training window reuses each date's mask. Monte Carlo mean, median, SD, Monte Carlo SE, mean ± 1.96 Monte Carlo SE, and empirical 2.5th–97.5th percentiles are recorded for each metric. These mean intervals describe numerical uncertainty from finite random masking on the **fixed participant sample**. The empirical percentiles instead describe the spread of errors across masks. They are not participant-population confidence intervals. Model differences are paired within repetition; repetitions are not treated as independent participant samples.
+
+</details>
+
+<details><summary>Participant bootstrap design and estimand</summary>
+
+For each of `r nb` samples, draw `r nrow(linkage)` participant IDs with replacement from the union of IDs across dates. Keep each selected participant's complete within-date sequence and original date membership. Use the **primary MCAR mask, fixed before resampling**, and copy its missingness with the participant. This prevents an unmasked duplicate from leaking a heldout target. All models and hourly means are refitted in every sample. A participant absent from one date remains absent from it, so per-date row counts vary.
+
+Percentile 95% intervals summarize refitted performance and paired RMSE/MAE differences. Each sample produces one RMSE and one MAE per cell of the experimental design, averaging errors over that sample's heldout observations. Intervals target the empirical participant-cluster distribution of in-sample missing-value recovery **conditional on this one validation mask and these dates**. They do not estimate out-of-participant predictive accuracy, average over all masking realizations, or account for variation between calendar dates. Duplicate participants and their repeated cells are legitimate cluster-bootstrap weights. Joint claims across dates require the linked resampling used here; separate marginal estimates should not be interpreted as independent.
+
+The optional nested bootstrap–masking study is disabled. No nested results are claimed. A nested study or participant-heldout validation would support different estimands and requires a separate design.
+
+</details>
+
+# Results
+
+## Accuracy across masks
+
+Explore day, fitting window, method, and error metric. Hover points for replicate-level values. These controls operate entirely inside the saved HTML.
+
+```{r accuracy-controls}
+main<-mc[mc$Activity=='All' & mc$FitWindow==mc$EvalWindow,]
+explore<-rbind(transform(main,Metric='RMSE',Error=RMSE),transform(main,Metric='MAE',Error=MAE))
+explore$Hover<-with(explore,paste(Day,FitWindow,Method,Metric,'replicate',Replicate,'error',round(Error,1)))
+shared<-SharedData$new(explore,key=~paste(Day,FitWindow,Method,Metric,Replicate),group='accuracy')
+htmltools::div(class='filter-row',filter_select('day','Date type',shared,~Day),
+ filter_select('window','Fitting window',shared,~FitWindow),filter_select('model','Method',shared,~Method),
+ filter_select('metric','Error measure',shared,~Metric))
+```
+
+```{r accuracy-interactive}
+plot_ly(shared,x=~Replicate,y=~Error,color=~Method,colors=pal,type='scatter',mode='markers',
+ text=~Hover,hoverinfo='text',marker=list(size=5,opacity=.5)) %>%
+ layout(xaxis=list(title='Mask repetition'),yaxis=list(title='Prediction error (steps)'),
+        legend=list(orientation='h',y=-.2))
+```
+
+```{r accuracy-static, fig.cap='Figure 3. RMSE and MAE across identical masking repetitions, by date and fitting window.'}
+fig('03_monte_carlo_accuracy')
+```
+
+```{r rankings}
+tbl(ranked[order(ranked$Day,ranked$FitWindow,ranked$RankRMSE),],10)
+```
+
+The ranking table uses common successful repetitions for all methods. Lowest RMSE and lowest MAE can identify different methods because RMSE emphasizes large errors.
+
+```{r summary-table}
+tbl(ms[ms$Activity=='All' & ms$FitWindow==ms$EvalWindow & ms$Metric %in% c('RMSE','MAE'),],10)
+```
+
+## Whole-day versus window-specific fitting
+
+All differences below evaluate **identical masked entries**. Negative values favor the narrower fit; positive values favor the whole-day fit. Baseline window effects are exactly zero wherever defined, since both benchmarks use no other hours.
+
+```{r window-interpretation, results='asis'}
+for(day in unique(windows$Day)) for(w in c('Daytime','Evening')) {
+ a<-windows[windows$Experiment=='monte_carlo' & windows$Day==day & windows$EvalWindow==w &
+ windows$Activity=='All' & windows$Metric=='RMSE' & windows$Method %in% c('Gaussian','Contaminated','Student_t'),]
+ for(i in seq_len(nrow(a))) {
+  b<-windows[windows$Experiment=='bootstrap' & windows$Day==day & windows$EvalWindow==w &
+    windows$Activity=='All' & windows$Metric=='RMSE' & windows$Method==a$Method[i],]
+  cat(sprintf('- **%s, %s, %s:** mean paired RMSE change %.1f steps across masks; fixed-mask participant-bootstrap 95%% interval [%.1f, %.1f] (%d finite samples).\n',
+    day,w,a$Method[i],a$Mean[i],b$Lower,b$Upper,b$Completed))
+ }
+}
+```
+
+```{r windows-plot, fig.cap='Figure 4. Paired fitting-window effects with participant-bootstrap percentile intervals. These bootstrap intervals condition on one mask.'}
+fig('04_fitting_window_effect')
+```
+
+```{r window-table}
+tbl(windows[windows$Activity=='All',],10)
+```
+
+## Errors on zeros and positive activity
+
+The zero-only method has zero error on every true zero, but its error on positive values equals their recorded magnitude. Assess the separate positive-activity rows before attributing whole-day performance to useful activity prediction. Neither a contaminated Gaussian nor a Student's t distribution explicitly accounts for a point mass at zero.
+
+```{r activity-errors, fig.cap='Figure 5. MAE by prespecified activity category, including zero and high activity.'}
+fig('05_activity_level_errors')
+```
+
+```{r nighttime-table}
+tbl(ms[ms$EvalWindow=='Nighttime' & ms$Activity %in% c('All','Zero','Positive') &
+ ms$Metric %in% c('RMSE','MAE'),],8)
+```
+
+## Primary-mask predictions and trajectories
+
+```{r scatter-plot, fig.cap='Figure 6. Predictions against recorded values for the primary mask; identity lines indicate exact recovery.'}
+fig('06_original_imputed')
+```
+
+```{r trajectory-interactive}
+tr<-rd('predictions/example_trajectories.csv')
+g<-ggplot(tr,aes(Hour,Value,color=Method,text=paste(Day,Id,Method,'hour',Hour,'steps',round(Value,1))))+
+ geom_line(data=subset(tr,Method=='Original'))+geom_point(data=subset(tr,Method!='Original'),size=2)+
+ facet_wrap(~Day+Id,ncol=1)+scale_color_manual(values=c(pal,Original='#222222'))+
+ theme_minimal()+labs(x='Hour at interval start',y='Steps',title='Recorded trajectories and masked-hour predictions')
+ggplotly(g,tooltip='text')
+```
+
+The examples were selected deterministically by source participant ID, not accuracy; displayed labels are publication pseudonyms. Black lines retain the full original record for display only; colored points mark predictions at hidden hours. The scatter and trajectories are descriptive examples from one mask, not the Monte Carlo conclusion.
+
+## Bootstrap uncertainty and paired method comparisons
+
+```{r uncertainty-plot, fig.cap='Figure 8. Mask-to-mask spread and fixed-mask participant-bootstrap intervals represent different sources of variation.'}
+fig('08_stability_uncertainty')
+```
+
+```{r bootstrap-table}
+tbl(bc[bc$Activity=='All' & bc$FitWindow==bc$EvalWindow & bc$Metric %in% c('RMSE','MAE'),],10)
+```
+
+For method comparisons, the difference is **Method A minus Method B**; negative favors A. Bootstrap percentile intervals that span zero do not establish a direction under the stated conditional bootstrap design. Monte Carlo intervals measure masking uncertainty only. No p-values or multiplicity-adjusted confirmatory claims are made.
+
+```{r pairwise-table}
+tbl(paired[paired$Activity=='All' & paired$FitWindow==paired$EvalWindow,],10)
+```
+
+# Convergence and numerical reliability
+
+```{r convergence-table}
+tbl(conv,12)
+```
+
+```{r failure-details, results='asis'}
+fail<-dg[!dg$Converged,]
+if(!nrow(fail)) cat('Every attempted fit satisfied the convergence criteria.\n') else
+ cat(sprintf('There are **%d** unavailable fits. Their detailed reason, date, window, and repetition are preserved in `fit_diagnostics.csv`. Rankings exclude a repetition from the relevant date/window if any method lacks a full score.\n',nrow(fail)))
+```
+
+```{r failure-table}
+if(nrow(fail)) tbl(fail)
+```
+
+```{r convergence-trace}
+trace<-rd('model_comparisons/primary_likelihood_traces.csv')
+ggplot(trace,aes(Iteration,Objective,color=Method))+geom_line()+facet_grid(Day~FitWindow,scales='free')+
+ scale_color_manual(values=pal)+theme_minimal()+labs(y='Penalized observed-data objective',title='Primary-mask objective traces')
+```
+
+Only penalized objective monotonicity is required: unpenalized likelihood can decrease under regularization. All model-specific latent moment formulas, known conditional moments, convergence, and covariance checks are validated in the QA scripts. Reaching a stopping criterion does not prove a global optimum or correct distributional specification.
+
+# Discussion, limitations, and conclusion
+
+```{r conclusion-findings, results='asis'}
+for(day in unique(ranked$Day)) for(w in c('Whole_day','Daytime','Evening')) {
+ a<-ranked[ranked$Day==day & ranked$FitWindow==w,]
+ em<-a[a$Method %in% c('Gaussian','Contaminated','Student_t'),]; e<-em[which.min(em$RMSE),]
+ best<-a[which.min(a$RMSE),]
+ refs<-paired[paired$Experiment=='bootstrap' & paired$Day==day & paired$FitWindow==w &
+ paired$EvalWindow==w & paired$Activity=='All' & paired$Metric=='RMSE' &
+ ((paired$MethodA==e$Method & paired$MethodB=='Time_of_day_mean') |
+  (paired$MethodB==e$Method & paired$MethodA=='Time_of_day_mean')),]
+ if(nrow(refs) && refs$MethodA!='Time_of_day_mean') {lo<-refs$Lower;hi<-refs$Upper} else
+ if(nrow(refs)) {lo<--refs$Upper;hi<--refs$Lower} else {lo<-hi<-NA}
+ cat(sprintf('- **%s / %s:** %s has the lowest mean RMSE among EM methods (%.1f). Across all methods, %s ranks first (%.1f). The fixed-mask bootstrap interval for the EM winner minus time-of-day mean is [%.1f, %.1f] steps.\n',
+ day,w,e$Method,e$RMSE,best$Method,best$RMSE,lo,hi))
+}
+```
+
+These are descriptive winners under the specified regularization and fixed ν. They do not by themselves establish superiority over every competitor. Review the paired method intervals and convergence counts alongside the rankings. A direction that differs between Monte Carlo masks and fixed-mask bootstrap samples is evidence of sensitivity to the validation design, rather than a robust general conclusion.
+
+```{r uncertainty-conclusion, results='asis'}
+emnames<-c('Gaussian','Contaminated','Student_t')
+wb<-windows[windows$Experiment=='bootstrap' & windows$Activity=='All' &
+ windows$Metric=='RMSE' & windows$Method %in% emnames,]
+cross<-sum(wb$Lower<=0 & wb$Upper>=0)
+cat(sprintf('**Fitting-window conclusion:** all %d of %d EM/date/window participant-bootstrap RMSE intervals include zero. Although narrower fits often lower average RMSE across masks, this study does not establish a consistent participant-population improvement under the conditional bootstrap design.\n\n',cross,nrow(wb)))
+for(day in unique(ranked$Day)) {
+ a<-ranked[ranked$Day==day & ranked$FitWindow=='Whole_day',]
+ bestmae<-a[which.min(a$MAE),]
+ cat(sprintf('For %s, **%s** has the lowest whole-day MAE (%.1f steps), demonstrating that metric choice and zero-heavy observations change the preferred method. ',day,bestmae$Method,bestmae$MAE))
+}
+```
+
+Shorter fitting windows remove potentially helpful cross-hour information but reduce covariance dimension from 24 to 9 daytime or 6 evening variables. The resulting bias–variance tradeoff and different effective sample sizes can affect errors. The shared standardized penalty reduces numerical instability but also changes the estimand from an unpenalized likelihood fit. Results depend on κ, ν, the contamination constraints, and the deterministic initialization; these settings were not tuned on heldout values.
+
+MCAR deletion is easier to justify computationally than realistic device nonwear, which may be MAR or MNAR. Only two dates are available, with different and overlapping participant sets. Observed zeros cannot distinguish inactivity, sleep, and nonwear. The outcome is recorded steps, not latent true physical activity. A hurdle, zero-inflated count, or two-part model is a plausible future alternative; none is claimed to be fitted here. Participant-heldout and additional-date validation would be necessary to claim accuracy for new people or typical weekdays and weekends.
+
+# Reproducibility and references
+
+Run `Rscript qa/validate_algorithms.R`, `Rscript run_analysis.R`, `Rscript qa/verify_study.R`, and `Rscript render_report.R --refresh-figures` from the project directory. The README describes parallel execution and checkpoint resumption. All figures are exported as vector PDFs and 320 dpi PNGs. Raw spreadsheets are copied unchanged, processed observations preserve source IDs, and analysis manifests detect stale computation checkpoints. The optional nested experiment is not executed.
+
+The R Markdown uses only generated result files. HTML plots, filters, and searchable tables embed their dependencies; equations use HTML symbols so they remain readable offline without a remote mathematics service.
+
+- Dempster, Laird, and Rubin (1977). Maximum likelihood from incomplete data via the EM algorithm. [Journal of the Royal Statistical Society B](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x).
+- Meng and Rubin (1993). Maximum likelihood estimation via the ECM algorithm: A general framework. [Biometrika](https://doi.org/10.1093/biomet/80.2.267).
+- Punzo, Mazza, and McNicholas (2018). ContaminatedMixt: An R Package for Fitting Parsimonious Mixtures of Multivariate Contaminated Normal Distributions. [Journal of Statistical Software](https://www.jstatsoft.org/article/view/v085i10). The current study implements a single contaminated distribution with missing observations and an explicit covariance penalty, rather than invoking that clustering package.
+- CondMVT reference manual. [CRAN](https://cloud.r-project.org/web/packages/CondMVT/CondMVT.pdf), a reference for multivariate t missing-data EM. The implementation here is independent and fixes ν.
+
+<details><summary>Session information and exact execution settings</summary>
+
+```{r configuration}
+cat(readLines(file.path(root,'config.yml')),sep='\n')
+```
+
+```{r session-info}
+cat(readLines(file.path(root,'results','sessionInfo.txt')),sep='\n')
+```
+
+</details>
+
+```{r custom-js, results='asis'}
+cat('<script>',paste(readLines(file.path(root,'report','custom.js')),collapse='\n'),'</script>')
+```
