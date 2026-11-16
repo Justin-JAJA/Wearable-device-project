@@ -1,9 +1,4 @@
 * text=auto
-*.R text eol=lf
-*.Rmd text eol=lf
-*.md text eol=lf
-*.yml text eol=lf
-*.csv text eol=lf
 *.png binary
 *.pdf binary
 report/*.html linguist-generated=true
