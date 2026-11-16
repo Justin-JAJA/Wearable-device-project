@@ -1,7 +1,6 @@
 # Inputs and participant-level artifacts are kept local.
 data/raw/*
 data/processed/*
-!data/processed/participant_linkage.csv
 results/checkpoints/
 results/analysis_manifest.rds
 results/missingness/*_primary_masked.csv
