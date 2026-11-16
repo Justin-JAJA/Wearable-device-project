@@ -31,7 +31,7 @@ paired<-rd('model_comparisons/paired_model_comparisons.csv')
 windows<-rd('model_comparisons/window_comparisons.csv')
 ranked<-rd('model_comparisons/final_model_ranking.csv')
 conv<-rd('model_comparisons/convergence_summary.csv');dg<-rd('model_comparisons/fit_diagnostics.csv')
-linkage<-read.csv(file.path(root,'data/processed/participant_linkage.csv'))
+cohort<-rd('descriptive/participant_counts.csv')
 nm<-length(unique(mc$Replicate));nb<-max(bc$Attempted)
 pal<-c(Gaussian='#0072B2',Contaminated='#009E73',Student_t='#D55E00',Zero_only='#7A5195',Time_of_day_mean='#666666')
 tbl<-function(d,n=8)datatable(d,rownames=FALSE,filter='top',
@@ -41,7 +41,7 @@ fig<-function(name,caption){knitr::include_graphics(file.path(root,'results','fi
 
 ```{r dashboard, results='asis'}
 cat(sprintf('<div class="dashboard"><div class="card"><strong>%d</strong><span>unique participants across dates</span></div><div class="card"><strong>%s</strong><span>originally observed hourly counts</span></div><div class="card"><strong>%d / %d</strong><span>Monte Carlo repetitions per date</span></div><div class="card"><strong>%d / %d</strong><span>linked participant bootstrap samples</span></div></div>',
- nrow(linkage),format(sum(audit$Observed),big.mark=','),nm,cfg$monte_carlo_repetitions,nb,cfg$bootstrap_repetitions))
+ cohort$UniqueParticipants,format(sum(audit$Observed),big.mark=','),nm,cfg$monte_carlo_repetitions,nb,cfg$bootstrap_repetitions))
 ```
 
 # Abstract
@@ -71,7 +71,7 @@ The hourly data derive from the [public crowd-sourced Fitbit exports](https://ze
 knitr::kable(audit,digits=0,caption='Input audit. Matrix rank is centered complete-data rank, before masking.')
 ```
 
-Publication labels replace source participant IDs, and raw spreadsheets and individual mask/prediction tables are excluded from this repository. There are **`r sum(linkage$Weekday & linkage$Weekend)` linked participants** observed on both dates. The bootstrap draws participant IDs from their union and preserves date membership, allowing the number of rows on each date to vary. Existing missing values are retained, and legitimate zeros remain observed values.
+Publication labels replace source participant IDs, and raw spreadsheets and individual mask/prediction tables are excluded from this repository. There are **`r cohort$LinkedParticipants` linked participants** observed on both dates. The bootstrap draws participant IDs from their union and preserves date membership, allowing the number of rows on each date to vary. Existing missing values are retained, and legitimate zeros remain observed values.
 
 ```{r profile-interactive}
 profiles<-rd('descriptive/hourly_profiles.csv')
@@ -169,7 +169,7 @@ Each date has `r nm` completed masking repetitions. Each method and training win
 
 <details><summary>Participant bootstrap design and estimand</summary>
 
-For each of `r nb` samples, draw `r nrow(linkage)` participant IDs with replacement from the union of IDs across dates. Keep each selected participant's complete within-date sequence and original date membership. Use the **primary MCAR mask, fixed before resampling**, and copy its missingness with the participant. This prevents an unmasked duplicate from leaking a heldout target. All models and hourly means are refitted in every sample. A participant absent from one date remains absent from it, so per-date row counts vary.
+For each of `r nb` samples, draw `r cohort$UniqueParticipants` participant IDs with replacement from the union of IDs across dates. Keep each selected participant's complete within-date sequence and original date membership. Use the **primary MCAR mask, fixed before resampling**, and copy its missingness with the participant. This prevents an unmasked duplicate from leaking a heldout target. All models and hourly means are refitted in every sample. A participant absent from one date remains absent from it, so per-date row counts vary.
 
 Percentile 95% intervals summarize refitted performance and paired RMSE/MAE differences. Each sample produces one RMSE and one MAE per cell of the experimental design, averaging errors over that sample's heldout observations. Intervals target the empirical participant-cluster distribution of in-sample missing-value recovery **conditional on this one validation mask and these dates**. They do not estimate out-of-participant predictive accuracy, average over all masking realizations, or account for variation between calendar dates. Duplicate participants and their repeated cells are legitimate cluster-bootstrap weights. Joint claims across dates require the linked resampling used here; separate marginal estimates should not be interpreted as independent.
 
