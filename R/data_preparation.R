@@ -35,6 +35,9 @@ prepare_data <- function(root, cfg) {
   linkage <- data.frame(Id=ids)
   for(day in names(days)) linkage[[day]]<-ids %in% days[[day]]$meta$Id
   write_table(linkage,file.path(root,'data','processed','participant_linkage.csv'))
+  write_table(data.frame(UniqueParticipants=nrow(linkage),
+    LinkedParticipants=sum(rowSums(as.matrix(linkage[-1]))==length(days))),
+    file.path(root,'results','descriptive','participant_counts.csv'))
   desc <- do.call(rbind,lapply(days,function(d) do.call(rbind,lapply(names(cfg$windows),function(w) {
     h<-window_hours(cfg,w); v<-as.vector(d$x[,h+1L,drop=FALSE]); v<-v[!is.na(v)]; pos<-v[v>0]
     q<-if(length(pos)) quantile(pos,c(.25,.5,.75,.95),names=FALSE) else rep(NA,4)
