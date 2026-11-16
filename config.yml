@@ -1,0 +1,20 @@
+seed: 20261116
+missing_fraction: 0.10
+monte_carlo_repetitions: 200
+bootstrap_repetitions: 500
+workers: 6
+max_iterations: 500
+tolerance: 0.000001
+covariance_penalty: 10
+student_df: 5
+low_positive_max: 100
+high_positive_min: 1000
+nested_experiment: false
+windows:
+  Whole_day: [0, 24]
+  Daytime: [9, 18]
+  Evening: [18, 24]
+  Nighttime: [0, 6]
+sources:
+  Weekday: 41_foolsday.xlsx
+  Weekend: 58mothersday data.xlsx

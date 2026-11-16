@@ -1,0 +1,29 @@
+# Inputs and participant-level artifacts are kept local.
+data/raw/*
+data/processed/*
+!data/processed/participant_linkage.csv
+results/checkpoints/
+results/analysis_manifest.rds
+results/missingness/*_primary_masked.csv
+results/missingness/mcar_mask_coordinates.csv
+results/predictions/heldout_predictions.csv
+results/bootstrap/bootstrap_metrics.csv
+results/model_comparisons/paired_replicate_differences.csv
+results/model_comparisons/window_replicate_differences.csv
+
+# Generated working state and machine-local files.
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+renv/library/
+renv/staging/
+renv/cache/
+*.tmp
+*.log
+report/*_files/
+report/*.knit.md
+report/*.utf8.md
+qa/report_*.png
+.DS_Store
+Thumbs.db
